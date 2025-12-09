@@ -1,0 +1,154 @@
+---
+title: "M3Project"
+author: "Kane"
+date: "2025-11-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+##  Statement of Question/Interest
+This analysis will focus on the number of incidents over time and when they occur though the day
+
+Questions:
+How do the number of incidents change over the the years?
+What times of day are most likely for shootings to occur?
+
+
+## Description of Data
+Source: City of New York
+
+Description:
+This data is provided by the City of New York and contains the all reported shooting incidents from 2006 to 2024. The reported data is when the incident took place, what boro, which precinct, the jurisdiction code, whether or not it was statistically linked to a murderer, a basic description of the perpetrator (age, sex, race), a basic description of the victim (age, sex, race), global coordinators, and local map coordinators. The data also included descriptions of the incident scene, which as been ommited from this import due to lack of entries.
+
+
+```{r, import_data, message = FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE}
+
+library(tidyverse)
+library(zoo)
+library(lubridate)
+library(plyr)
+library(ggplot2)
+library(scales)
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+incident_data <- read_csv(url_in)
+```
+
+```{r, tidy_and_trasnform_data, message = FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# Convert all unknown data to "UNKNWON" for consitency
+incident_data$PERP_AGE_GROUP[incident_data$PERP_AGE_GROUP %in% c("(null)", NA)] = "UNKNOWN"
+incident_data$PERP_SEX[incident_data$PERP_SEX %in% c("(null)", "U", NA)] = "UNKNOWN"
+incident_data$PERP_RACE[incident_data$PERP_RACE %in% c("(null)", NA)] = "UNKNOWN"
+
+incident_data$VIC_AGE_GROUP[incident_data$VIC_AGE_GROUP %in% c("(null)", NA)] = "UNKNOWN"
+incident_data$VIC_SEX[incident_data$VIC_SEX %in% c("(null)", "U", NA)] = "UNKNOWN"
+incident_data$VIC_RACE[incident_data$VIC_RACE %in% c("(null)", NA)] = "UNKNOWN"
+
+
+# Transform the data to the appropriate data type
+incident_data = transform(incident_data, PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP))
+
+incident_data = transform(incident_data, OCCUR_DATE = as.Date(OCCUR_DATE, format="%m/%d/%Y"))
+incident_data = transform(incident_data, BORO = as.factor(BORO))
+incident_data = transform(incident_data, PRECINCT = as.factor(PRECINCT))
+incident_data = transform(incident_data, JURISDICTION_CODE = as.factor(JURISDICTION_CODE))
+
+incident_data = transform(incident_data, PERP_SEX = as.factor(PERP_SEX))
+incident_data = transform(incident_data, PERP_RACE = as.factor(PERP_RACE))
+
+incident_data = transform(incident_data, VIC_AGE_GROUP = as.factor(PERP_AGE_GROUP))
+incident_data = transform(incident_data, VIC_SEX = as.factor(VIC_SEX))
+incident_data = transform(incident_data, VIC_RACE = as.factor(VIC_RACE))
+
+
+# Duplicate Data, lat and lon both already in table
+incident_data = subset(incident_data, select = -Lon_Lat)
+
+# Removed because most of the data did not include entries for these descriptions --- Probably optional when the report was filed or change to how reports were filed at some point to add this information
+incident_data = subset(incident_data, select = -c(LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC))
+
+summary(incident_data)
+```
+
+## Number of Incidents Over Time
+
+```{r, frequency_over_time_data, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+frequency_over_time <- incident_data %>% subset(select=OCCUR_DATE) #%>% rename(Date = OCCUR_DATE)
+
+year <- frequency_over_time$OCCUR_DATE %>% year()
+quarter <- frequency_over_time$OCCUR_DATE %>% quarters()
+
+frequency_over_time <- data.frame(year, quarter) %>% ddply(.(.$year, .$quarter), nrow)
+names(frequency_over_time) <- c("Year", "Quarter", "Count")
+
+FoT_graph <- frequency_over_time %>% ggplot(aes(fill=Quarter, x=Year, y=Count)) + geom_bar(position="dodge", stat="identity") + labs(title="NYPD Reported Shooting Incidents Overtime by Quarter")
+
+model_incidents_over_time = glm(Count~Year+Quarter+Year:Quarter, data=frequency_over_time, family = "poisson")
+model_incidents_over_time_noint = glm(Count~Year+Quarter, data=frequency_over_time, family = "poisson")
+# Poisson selected due to modeling counts of something, looking for an overall trend, therefore simple glm with interaction and not any loess or ksmooth
+
+
+tend_line_width = 1
+
+FoT_graph = FoT_graph +
+  geom_line(aes(y=fitted(model_incidents_over_time), group=Quarter), size=tend_line_width*1.5, linetype="solid", lineend="round", color="#000") +
+  geom_line(aes(y=fitted(model_incidents_over_time), color=Quarter), size=tend_line_width, linetype="solid", lineend="round") +
+  theme_bw()
+
+summary(model_incidents_over_time)
+anova(model_incidents_over_time)
+anova(model_incidents_over_time_noint, model_incidents_over_time)
+FoT_graph
+
+mu <- function(year, q2, q3, q4) return( 32.212750 - 0.013194 * year + 15.753293 * q2 + 23.539532 * q3 +37.120675 * q4 - 0.007613 * year * q2-0.011386* year * q3 - 0.018309 * year * q4 )
+
+
+total <- function(year) exp(mu(year, 0, 0, 0)) + exp(mu(year, 1, 0, 0)) + exp(mu(year, 0, 1, 0)) + exp(mu(year, 0, 0, 1))
+
+decrease_percentage = mean(1 - total(2007:2024) / total(2006:2023))
+
+print(decrease_percentage) # [1] 0.02281219 -> 2.28% year/year on average
+```
+According to the model there is an average of around 2.28% fewer shooting incidents every year. However this data seems to indicate that there was a noticeable increase in incidents in 2020, which coincides with the HCoV-19 (COVID-19) global pandemic. This may skew the data, but not enough time has past for a valid model to be produced with the data post 2020. Further observation needs to be carried out in the following years. The data also shows that quarter 3 seems to have a significantly higher rate of shooting incidents while quarter 4 has the fewest. I am not sure what causes the drastic differences in the quarters. Quarter 1: Jan, Feb, Mar; quarter 2: Apr, May, Jun; quarter 3: Jul, Aug, Sep; quarter 4: Oct, Nov, Dec. With the months of each quarter, the Q3 increase in incidents line up with the beginning of school/end of summer. Both q2 and q3 are spring/summer months, where q4 and q1 are winter months. There may be more which align with these months, but I do not know and more research would be required to determine what the correlated events are which may cause the disparity in cases. A large source of bias is that I am using a poisson linear model for this analysis, I am assuming that there is a trend with the number of incidents based on the year and quarter. According to the ANOVA there is statistically significant interaction between the year and the quarter of the year predictors.
+
+
+## Rate of Incidents Throughout the Day
+
+```{r, time_of_event_data, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+time_of_event <- incident_data %>% subset(select=c(OCCUR_TIME, OCCUR_DATE)) %>% transform(OCCUR_TIME = as.POSIXct(OCCUR_TIME), OCCUR_DATE=weekdays(OCCUR_DATE))
+
+time_of_event2 <- transform(time_of_event, "Hour of Day" = cut(as.numeric(hour(OCCUR_TIME))+1, breaks=seq(0, 24, 1), label=c(0:23)))
+time_of_event2 <- ddply(time_of_event2, .(time_of_event2$`Hour of Day`, time_of_event2$OCCUR_DATE), nrow)
+names(time_of_event2) <- c("Hour of Day", "Day of Week", "Count")
+
+time_of_event2 <- transform(time_of_event2, `Hour of Day`=as.integer(`Hour of Day`)-1, "Day of Week"=as.factor(`Day of Week`))
+time_of_event2
+
+
+time_of_event %>% ggplot(aes(x=OCCUR_TIME)) + geom_density() + scale_x_datetime(breaks = date_breaks("2 hours"), labels=date_format("%H:%M")) + labs(title="Density of Repoted Incidents Across all Days", x="Time")
+
+time_of_event %>% ggplot(aes(x=OCCUR_TIME, color=OCCUR_DATE)) + geom_density() + scale_x_datetime(breaks = date_breaks("2 hours"), labels=date_format("%H:%M")) + labs(title="Density of Repoted Incidents Seperated by Day of the week", x="Time")
+
+ggplot(aes(y=Count, x=`Hour of Day`, color=`Day of Week`), data=time_of_event2) + geom_line()
+
+```
+It appears that there are 2 peaks at which shootings occur and that is around 10 at night and 1:30-2:00 in the morning. If I were to guess at the correlated events, that would be domestic events in the evening and intruder events in the early morning. Shootings occur the least during the morning and mid day, but there is an interesting increase during the mid afternoon of 2:00-4:00. The data needed to be able to correlate the events and the peaks would require there to be either a conviction or reason column for the data which gives what the type/motivation is for the shootings.
+
+
+## Conclusion
+Based on the model of the data the number of incidents has decreased over time, there appears to be a roughly 2.28% decrease in the number of incidents every year. There is a statistical anomaly stating in 2020 which aligns with the 2020 global pandemic and may have skewed the average decease upwards towards a smaller decrease. There also appears to be some form of linking of the number of incidents to the quarter of the year, more research and analysis is required to determine what though.
+
+There are a couple of times of day when the density of shooting incidents are high, in the early night/late afternoon, around 10:00pm, and again in the early morning, around 1:30am-2:00am. This could be linked to domestic incidents and intruder incidents respectively, but there is not data in the data set to be able to determine this connection. There also happens to be an increase in density in the early afternoon, 2:00pm-4:00pm, and I don't have any idea as to what could cause this, more research is need to be able to make connections on the correlation and causation of these points.
+
+## Bias
+
+Sources of bias could be:
+- Survivor bias, as only know incidents would be reported
+- NAs, nulls, unknowns reduce the possible size of the data
+
+Personal Bias
+- I expected shootings to occur more in the day then they did \| I graphed the data about as raw as I could
+- I expected there to be a negative trend over time with the shootings \| I graphed all the data before making any trends overall I went into this project with very little knowledge on the data before hand and the data I found interesting.
+- I have some ideas of when shooting should occur, e.g. any gang stuff during the day, domestic stuff when people get home, intruders during the night; but this may not be right and would need data to back it up.
+- I know that COVID lock down occurred in 2020 and that that forced people into close proxcimity to each other for far longer than they were accustom too and that cuase many problems.
